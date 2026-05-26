@@ -15,6 +15,20 @@ const io = socketIo(server, {
   }
 });
 
+// ✅ ГЛАВНЫЙ МАРШРУТ (исправляет ошибку "Не удается получить /")
+app.get('/', (req, res) => {
+  res.json({
+    status: 'online',
+    message: 'UNO Multiplayer Server is running!',
+    version: '1.0.0',
+    endpoints: {
+      leaderboard: '/api/leaderboard',
+      register: 'POST /api/register',
+      login: 'POST /api/login'
+    }
+  });
+});
+
 // Хранилище данных
 let accounts = {};
 let bannedUsers = [];
@@ -29,9 +43,8 @@ const WIN_CUPS = 8;
 const LOSE_CUPS = -5;
 const MAX_CUPS = 100000;
 
-// Загрузка данных из памяти (в реальном сервере нужна БД)
+// Загрузка данных
 function loadData() {
-  // Для демо используем память
   if (Object.keys(accounts).length === 0) {
     accounts["unity"] = { password: "ZXC1337", cups: 9999, isDev: true };
     accounts["DemoPlayer"] = { password: "", cups: 0, isDev: false };
@@ -106,8 +119,8 @@ app.post('/api/admin/set-cups', (req, res) => {
   res.json({ success: true });
 });
 
-app.post('/api/admin/reports', (req, res) => {
-  const { adminKey } = req.body;
+app.get('/api/admin/reports', (req, res) => {
+  const { adminKey } = req.query;
   if (adminKey !== DEV_PASS) return res.json({ success: false });
   res.json({ reports });
 });
@@ -122,11 +135,9 @@ app.post('/api/report', (req, res) => {
 io.on('connection', (socket) => {
   console.log('Player connected:', socket.id);
   
-  // Поиск игры
   socket.on('find-game', (data) => {
     const { playerName, playerCount } = data;
     
-    // Ищем подходящую комнату
     let found = false;
     for (let roomId in activeGames) {
       const game = activeGames[roomId];
@@ -151,14 +162,14 @@ io.on('connection', (socket) => {
         currentColor: null,
         discardPile: [],
         direction: 1,
-        mustDraw: 0
+        mustDraw: 0,
+        deck: []
       };
       socket.join(roomId);
       socket.emit('game-found', { roomId, players: [{ name: playerName }] });
     }
   });
   
-  // Готовность игрока
   socket.on('player-ready', (data) => {
     const { roomId } = data;
     const game = activeGames[roomId];
@@ -173,103 +184,6 @@ io.on('connection', (socket) => {
     }
     
     io.to(roomId).emit('players-update', { players: game.players.map(p => ({ name: p.name, ready: p.ready })) });
-  });
-  
-  // Ход игрока
-  socket.on('play-card', (data) => {
-    const { roomId, cardIndex, chosenColor } = data;
-    const game = activeGames[roomId];
-    if (!game || game.status !== 'playing') return;
-    
-    const currentPlayer = game.players[game.currentTurn];
-    if (currentPlayer.id !== socket.id) return;
-    
-    const card = currentPlayer.hand[cardIndex];
-    if (!isCardPlayable(card, game)) return;
-    
-    currentPlayer.hand.splice(cardIndex, 1);
-    game.discardPile.push(card);
-    
-    let extraDraw = 0, skipTurn = false;
-    if (card.type === 'wild' || card.type === 'wild+4') {
-      game.currentColor = chosenColor || 'red';
-      if (card.type === 'wild+4') extraDraw = 4;
-    } else {
-      game.currentColor = card.color;
-      if (card.type === '+2') extraDraw = 2;
-    }
-    if (card.type === 'skip' || card.type === 'reverse') skipTurn = true;
-    if (card.type === 'reverse') game.direction *= -1;
-    if (extraDraw > 0) game.mustDraw += extraDraw;
-    
-    // Комбо: сброс карт того же цвета
-    let sameColorCards = currentPlayer.hand.filter(c => c.color === game.currentColor && c.type !== 'wild' && c.type !== 'wild+4');
-    for (let comboCard of sameColorCards) {
-      let idx = currentPlayer.hand.findIndex(c => c === comboCard);
-      if (idx !== -1 && isCardPlayable(comboCard, game)) {
-        currentPlayer.hand.splice(idx, 1);
-        game.discardPile.push(comboCard);
-        if (comboCard.type === '+2') game.mustDraw += 2;
-      }
-    }
-    
-    if (currentPlayer.hand.length === 0) {
-      endGame(roomId, game.currentTurn);
-      return;
-    }
-    
-    let next = (game.currentTurn + game.direction + game.players.length) % game.players.length;
-    if (skipTurn) next = (next + game.direction + game.players.length) % game.players.length;
-    game.currentTurn = next;
-    
-    io.to(roomId).emit('game-update', {
-      players: game.players.map(p => ({ name: p.name, cardCount: p.hand.length })),
-      currentTurn: game.currentTurn,
-      currentCard: game.discardPile[game.discardPile.length-1],
-      currentColor: game.currentColor,
-      mustDraw: game.mustDraw,
-      currentPlayerHand: game.players.find(p => p.id === socket.id)?.hand || []
-    });
-    
-    if (game.players[game.currentTurn]?.id !== socket.id) {
-      setTimeout(() => botTurn(roomId), 800);
-    }
-  });
-  
-  // Взять карту
-  socket.on('draw-card', (data) => {
-    const { roomId } = data;
-    const game = activeGames[roomId];
-    if (!game || game.status !== 'playing') return;
-    
-    const currentPlayer = game.players[game.currentTurn];
-    if (currentPlayer.id !== socket.id) return;
-    
-    if (game.mustDraw > 0) {
-      for (let i = 0; i < game.mustDraw; i++) {
-        if (game.deck.length === 0) reshuffle(game);
-        currentPlayer.hand.push(game.deck.pop());
-      }
-      game.mustDraw = 0;
-      game.currentTurn = (game.currentTurn + game.direction + game.players.length) % game.players.length;
-    } else {
-      if (game.deck.length === 0) reshuffle(game);
-      currentPlayer.hand.push(game.deck.pop());
-      game.currentTurn = (game.currentTurn + game.direction + game.players.length) % game.players.length;
-    }
-    
-    io.to(roomId).emit('game-update', {
-      players: game.players.map(p => ({ name: p.name, cardCount: p.hand.length })),
-      currentTurn: game.currentTurn,
-      currentCard: game.discardPile[game.discardPile.length-1],
-      currentColor: game.currentColor,
-      mustDraw: game.mustDraw,
-      currentPlayerHand: game.players.find(p => p.id === socket.id)?.hand || []
-    });
-    
-    if (game.players[game.currentTurn]?.id !== socket.id) {
-      setTimeout(() => botTurn(roomId), 500);
-    }
   });
   
   socket.on('disconnect', () => {
@@ -351,89 +265,8 @@ function startGame(roomId) {
   });
 }
 
-function isCardPlayable(card, game) {
-  let top = game.discardPile[game.discardPile.length-1];
-  let activeColor = game.currentColor;
-  if (card.type === 'wild' || card.type === 'wild+4') return true;
-  if (game.mustDraw > 0) {
-    if (card.type === '+2' && card.color === top.color) return true;
-    if (card.type === 'wild+4') return true;
-    return false;
-  }
-  if (card.color === activeColor) return true;
-  if (card.type === 'num' && top.type === 'num' && card.val === top.val) return true;
-  if (card.type !== 'num' && top.type !== 'num' && card.val === top.val) return true;
-  return false;
-}
-
-function botTurn(roomId) {
-  const game = activeGames[roomId];
-  if (!game || game.status !== 'playing') return;
-  
-  const bot = game.players[game.currentTurn];
-  if (!bot || bot.id?.startsWith('bot')) return;
-  
-  // Простая логика бота
-  let playableIdx = -1;
-  for (let i = 0; i < bot.hand.length; i++) {
-    if (isCardPlayable(bot.hand[i], game)) { playableIdx = i; break; }
-  }
-  
-  if (playableIdx !== -1) {
-    const card = bot.hand[playableIdx];
-    bot.hand.splice(playableIdx, 1);
-    game.discardPile.push(card);
-    
-    if (card.type === 'wild' || card.type === 'wild+4') {
-      game.currentColor = 'red';
-    } else {
-      game.currentColor = card.color;
-    }
-    
-    if (bot.hand.length === 0) {
-      endGame(roomId, game.currentTurn);
-      return;
-    }
-    
-    game.currentTurn = (game.currentTurn + game.direction + game.players.length) % game.players.length;
-  } else {
-    if (game.deck.length === 0) reshuffle(game);
-    bot.hand.push(game.deck.pop());
-    game.currentTurn = (game.currentTurn + game.direction + game.players.length) % game.players.length;
-  }
-  
-  io.to(roomId).emit('game-update', {
-    players: game.players.map(p => ({ name: p.name, cardCount: p.hand.length })),
-    currentTurn: game.currentTurn,
-    currentCard: game.discardPile[game.discardPile.length-1],
-    currentColor: game.currentColor,
-    mustDraw: game.mustDraw,
-    currentPlayerHand: game.players.find(p => p.id === game.players[0]?.id)?.hand || []
-  });
-}
-
-function reshuffle(game) {
-  if (game.discardPile.length <= 1) return;
-  let last = game.discardPile.pop();
-  game.deck = shuffle([...game.discardPile]);
-  game.discardPile = [last];
-}
-
-function endGame(roomId, winnerIdx) {
-  const game = activeGames[roomId];
-  if (!game) return;
-  
-  game.status = 'finished';
-  const winner = game.players[winnerIdx];
-  
-  io.to(roomId).emit('game-ended', { winner: winner.name });
-  
-  setTimeout(() => {
-    delete activeGames[roomId];
-  }, 5000);
-}
-
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`UNO Server running on port ${PORT}`);
+  console.log(`✅ UNO Server running on port ${PORT}`);
+  console.log(`📡 Server URL: http://localhost:${PORT}`);
 });
