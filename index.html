@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UNO Online - Мультиплеер</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            min-height: 100vh;
+            background: radial-gradient(circle at 20% 30%, #0a2a18, #031208);
+            font-family: 'Segoe UI', 'Poppins', sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        .container { text-align: center; color: white; max-width: 500px; width: 100%; }
+        .card {
+            background: linear-gradient(145deg, #1e3a2f, #0f2a1c);
+            border-radius: 50px;
+            padding: 40px;
+            border: 2px solid #ffd966;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+        }
+        h1 { font-size: 2.5rem; color: #ffd966; margin-bottom: 20px; }
+        input {
+            width: 100%;
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 50px;
+            border: none;
+            font-size: 1rem;
+            background: #f9f7f3;
+        }
+        button {
+            width: 100%;
+            padding: 15px;
+            margin: 10px 0;
+            background: linear-gradient(95deg, #FFB347, #FF8C42);
+            border: none;
+            border-radius: 50px;
+            font-weight: bold;
+            font-size: 1.1rem;
+            cursor: pointer;
+        }
+        .status {
+            margin-top: 15px;
+            padding: 10px;
+            border-radius: 30px;
+            background: rgba(0,0,0,0.5);
+            font-size: 0.9rem;
+        }
+        .online { color: #4ade80; }
+        .offline { color: #f87171; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="card">
+        <h1>🎴 UNO Online</h1>
+        <div class="status" id="status">
+            🔌 Подключение к серверу...
+        </div>
+        <input type="text" id="nickname" placeholder="Ваш никнейм">
+        <input type="password" id="password" placeholder="Пароль (если есть)">
+        <button onclick="connectAndLogin()">🎮 Войти и играть</button>
+        <button onclick="register()">📝 Зарегистрироваться</button>
+    </div>
+</div>
+
+<script>
+    // ⚠️ ЗАМЕНИТЕ ЭТУ ССЫЛКУ НА ВАШ СЕРВЕР В RENDER!
+    const SERVER_URL = 'https://ваш-сервер.onrender.com';
+    
+    let socket = null;
+    let currentUser = null;
+    let currentRoom = null;
+    
+    async function connectAndLogin() {
+        const nickname = document.getElementById('nickname').value.trim();
+        const password = document.getElementById('password').value;
+        
+        if (!nickname) {
+            alert('Введите никнейм!');
+            return;
+        }
+        
+        try {
+            // Логин через API
+            const res = await fetch(`${SERVER_URL}/api/login`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ nickname, password })
+            });
+            const data = await res.json();
+            
+            if (!data.success) {
+                alert(data.error || 'Ошибка входа');
+                return;
+            }
+            
+            currentUser = nickname;
+            document.getElementById('status').innerHTML = `✅ Вход выполнен! Подключаемся к игре...`;
+            
+            // Подключаем Socket.IO
+            connectSocket();
+            
+        } catch (e) {
+            alert('Ошибка подключения к серверу: ' + e.message);
+        }
+    }
+    
+    async function register() {
+        const nickname = document.getElementById('nickname').value.trim();
+        const password = document.getElementById('password').value;
+        
+        if (!nickname) {
+            alert('Введите никнейм!');
+            return;
+        }
+        
+        try {
+            const res = await fetch(`${SERVER_URL}/api/register`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ nickname, password })
+            });
+            const data = await res.json();
+            
+            if (data.success) {
+                alert('✅ Регистрация успешна! Теперь войдите.');
+            } else {
+                alert(data.error || 'Ошибка регистрации');
+            }
+        } catch (e) {
+            alert('Ошибка: ' + e.message);
+        }
+    }
+    
+    function connectSocket() {
+        // Подключение к Socket.IO серверу
+        socket = io(SERVER_URL, {
+            transports: ['websocket', 'polling']
+        });
+        
+        socket.on('connect', () => {
+            document.getElementById('status').innerHTML = `🟢 Подключено! Ищем игру для ${currentUser}...`;
+            // Ищем игру с ботами (2 игрока)
+            socket.emit('find-game', { playerName: currentUser, playerCount: 2 });
+        });
+        
+        socket.on('game-found', (data) => {
+            currentRoom = data.roomId;
+            document.getElementById('status').innerHTML = `🎮 Игра найдена! Комната: ${data.roomId.substring(0, 8)}... Готовимся...`;
+            socket.emit('player-ready', { roomId: currentRoom });
+        });
+        
+        socket.on('players-update', (data) => {
+            const playersList = data.players.map(p => `${p.name} ${p.ready ? '✅' : '⏳'}`).join(', ');
+            document.getElementById('status').innerHTML = `👥 Игроки: ${playersList}`;
+        });
+        
+        socket.on('game-start', (data) => {
+            document.getElementById('status').innerHTML = `🎉 ИГРА НАЧАЛАСЬ! Ваш ход!`;
+            alert('Игра началась! (Полная версия игры откроется в новом окне)');
+            // Здесь можно открыть полноценный игровой интерфейс
+        });
+        
+        socket.on('game-update', (data) => {
+            console.log('Game update:', data);
+        });
+        
+        socket.on('game-ended', (data) => {
+            alert(`🏆 Игра завершена! Победил: ${data.winner}`);
+            document.getElementById('status').innerHTML = `🏆 Победил: ${data.winner}. Нажмите "Войти и играть" для новой игры.`;
+            socket.disconnect();
+        });
+        
+        socket.on('disconnect', () => {
+            document.getElementById('status').innerHTML = `🔴 Соединение потеряно`;
+        });
+        
+        socket.on('connect_error', (err) => {
+            document.getElementById('status').innerHTML = `❌ Ошибка: ${err.message}`;
+        });
+    }
+</script>
+
+<!-- Подключаем Socket.IO клиент -->
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+</body>
+</html>
